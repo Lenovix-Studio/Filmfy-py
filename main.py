@@ -77,49 +77,38 @@ def extract_javlibrary(url: str) -> ExtractResponse:
     result.country = "Japan"
     result.language = "Japanese"
     
-    title_elem = soup.find('h1', class_='title')
+    # Title
+    title_elem = soup.select_one('#video_title a') or soup.find('h3')
     if title_elem:
         result.title = title_elem.get_text(strip=True)
     
-    code_match = re.search(r'([A-Z]+-\d+)', result.title or url)
-    if code_match:
-        result.code = code_match.group(1)
-    
-    info_section = soup.find('div', class_='video-info')
-    if info_section:
-        rows = info_section.find_all('div', class_='row')
-        for row in rows:
-            label = row.find('span', class_='text')
-            value_div = row.find('div')
-            
-            if not label or not value_div:
-                continue
-            
-            label_text = label.get_text(strip=True).lower()
-            value_text = value_div.get_text(strip=True)
-            
-            if 'director' in label_text:
-                result.director = value_text
-            elif 'studio' in label_text:
-                result.studio = value_text
-            elif 'label' in label_text:
-                result.label = value_text
-            elif 'release' in label_text or 'date' in label_text:
-                date_match = re.search(r'(\d{4}-\d{2}-\d{2})', value_text)
-                if date_match:
-                    result.release_date = date_match.group(1)
-    
-    genres_section = soup.find('div', class_='genre')
-    if genres_section:
-        genre_links = genres_section.find_all('a')
-        genres = [g.get_text(strip=True) for g in genre_links]
-        result.genres = ', '.join(genres)
-    
-    cast_section = soup.find('div', class_='cast')
-    if cast_section:
-        cast_links = cast_section.find_all('a')
-        cast = [c.get_text(strip=True) for c in cast_links]
-        result.cast = ', '.join(cast)
+    # Info Section
+    video_info = soup.find('div', id='video_info')
+    if video_info:
+        def get_info_text(label_id):
+            row = video_info.find('div', id=label_id)
+            if row:
+                val = row.find('td', class_='text')
+                return val.get_text(strip=True) if val else ""
+            return ""
+
+        result.code = get_info_text('video_id')
+        result.release_date = get_info_text('video_date')
+        result.director = get_info_text('video_director')
+        result.studio = get_info_text('video_maker')
+        result.label = get_info_text('video_label')
+
+        # Cast
+        cast_row = video_info.find('div', id='video_cast')
+        if cast_row:
+            casts = [a.get_text(strip=True) for a in cast_row.find_all('a')]
+            result.cast = ', '.join(casts)
+
+        # Genres
+        genre_row = video_info.find('div', id='video_genres')
+        if genre_row:
+            genres = [a.get_text(strip=True) for a in genre_row.find_all('a')]
+            result.genres = ', '.join(genres)
     
     return result
 

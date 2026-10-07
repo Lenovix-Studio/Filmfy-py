@@ -1,0 +1,6 @@
+# Mengabaikan semua folder __pycache__ dan file .pyc di seluruh project
+**/__pycache__/
+*.pyc
+
+# Mengabaikan virtual environment Anda
+venv/
