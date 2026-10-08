@@ -24,11 +24,12 @@ app.add_middleware(
 )
 
 class ExtractRequest(BaseModel):
-    url: str
+    code: str
 
 class ExtractResponse(BaseModel):
     code: str = ""
     title: str = ""
+    overview: str = ""
     director: str = ""
     studio: str = ""
     label: str = ""
@@ -38,118 +39,82 @@ class ExtractResponse(BaseModel):
     cast: str = ""
     genres: str = ""
 
-def extract_javlibrary(url: str) -> ExtractResponse:
-    def _scrape_sync():
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False)
-            ctx = browser.new_context(
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            )
-            page = ctx.new_page()
-            page.goto(url, wait_until='domcontentloaded', timeout=45000)
-            
-            # poll until Cloudflare challenge cleared (max 120s)
-            import time as _time
-            deadline = _time.time() + 120
-            while _time.time() < deadline:
-                title = page.title()
-                if "Just a moment" not in title and "Attention Required" not in title:
-                    if page.query_selector('#video_title h3.post-title a'):
-                        break
-                page.wait_for_timeout(1000)
-                
-            page.wait_for_timeout(3000)
-            html = page.content()
-            ctx.close()
-            browser.close()
-            return html
+def extract_javinfo(code: str) -> ExtractResponse:
+    url = "https://api.javinfo.dev/movie"
+    headers = {
+        "x-javinfo-key": os.getenv("JAVINFO_KEY", "jvi_VQvjDrBXubfDCGvydcLOSmPzTuEfVdhIReZJDwvdFaBIOnQwRoNSIAlsswqLntbM"),
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "q": code,
+        "providers": "missav,javlibrary,sextb,javdatabase,dmm,fanza"
+    }
     
     try:
-        html = _scrape_sync()
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        data = response.json()
+        
+        movie_data = data.get("result", {})
+        if not movie_data:
+            raise HTTPException(status_code=404, detail="Movie not found")
+            
+        result = ExtractResponse()
+        result.code = movie_data.get("dvdId") or code
+        result.title = movie_data.get("titleEn") or movie_data.get("titleJa") or ""
+        result.overview = movie_data.get("commentEn") or movie_data.get("commentJa") or ""
+        result.director = ", ".join(movie_data.get("directors", []))
+        result.studio = ", ".join(movie_data.get("makers", []))
+        result.label = movie_data.get("label") or ""
+        result.country = "Japan"
+        result.language = "Japanese"
+        result.release_date = movie_data.get("releaseDate") or ""
+        
+        # Combine actresses and actors for cast
+        actresses = movie_data.get("actresses", [])
+        actors = movie_data.get("actors", [])
+        result.cast = ", ".join(actresses + actors)
+        
+        result.genres = ", ".join(movie_data.get("categories", []))
+        
+        try:
+            requests.post(f"{os.getenv('BACKEND_URL')}/settings/logs", json={
+                'level': 'INFO',
+                'message': f'Extraction successful for code: {code}',
+                'source': 'scraper',
+                'request': {'code': code},
+                'response': result.dict(),
+            })
+        except Exception:
+            pass
+            
+        return result
     except Exception as e:
+        error_msg = str(e)
+        if hasattr(e, 'response') and e.response:
+            try:
+                error_msg = e.response.json().get('message', error_msg)
+            except:
+                pass
+        
         try:
             requests.post(f"{os.getenv('BACKEND_URL')}/settings/logs", json={
                 'level': 'ERROR',
-                'message': str(e),
+                'message': f'Extraction failed: {error_msg}',
                 'source': 'scraper',
-                'request': {'url': url},
+                'request': {'code': code},
                 'response': None,
             })
         except Exception:
             pass
-        raise HTTPException(status_code=400, detail=f"Failed to fetch URL: {str(e)}")
-    
-    soup = BeautifulSoup(html, 'html.parser')
-    result = ExtractResponse()
-    
-    result.country = "Japan"
-    result.language = "Japanese"
-    
-    # Title
-    title_elem = soup.select_one('#video_title h3.post-title a')
-    if title_elem:
-        result.title = title_elem.get_text(strip=True)
-    
-    # ID (Code)
-    id_elem = soup.select_one('#video_id td.text')
-    if id_elem:
-        result.code = id_elem.get_text(strip=True)
-    
-    # Release Date
-    date_elem = soup.select_one('#video_date td.text')
-    if date_elem:
-        result.release_date = date_elem.get_text(strip=True)
-    
-    # Director
-    director_elem = soup.select_one('#video_director td.text a')
-    if director_elem:
-        result.director = director_elem.get_text(strip=True)
-    
-    # Studio (Maker)
-    studio_elem = soup.select_one('#video_maker td.text a')
-    if studio_elem:
-        result.studio = studio_elem.get_text(strip=True)
-    
-    # Label
-    label_elem = soup.select_one('#video_label td.text a')
-    if label_elem:
-        result.label = label_elem.get_text(strip=True)
-    
-    # Cast
-    cast_elems = soup.select('#video_cast td.text a')
-    if cast_elems:
-        result.cast = ', '.join([a.get_text(strip=True) for a in cast_elems])
-    
-    # Genres
-    genre_elems = soup.select('#video_genres span.genre a')
-    if genre_elems:
-        result.genres = ', '.join([a.get_text(strip=True) for a in genre_elems])
-    
-    try:
-        requests.post(f"{os.getenv('BACKEND_URL')}/settings/logs", json={
-            'level': 'INFO',
-            'message': 'Extraction successful',
-            'source': 'scraper',
-            'request': {'url': url},
-            'response': result.dict(),
-        })
-    except Exception:
-        pass
-    
-    return result
+        raise HTTPException(status_code=400, detail=f"Failed to fetch data: {error_msg}")
 
 @app.post("/extract", response_model=ExtractResponse)
 async def extract_metadata(request: ExtractRequest):
-    if not request.url:
-        raise HTTPException(status_code=400, detail="URL is required")
+    if not request.code:
+        raise HTTPException(status_code=400, detail="Code is required")
     
-    domain = urlparse(request.url).netloc.lower()
-    
-    if 'javlibrary' in domain:
-        result = await run_in_threadpool(extract_javlibrary, request.url)
-        return result
-    else:
-        raise HTTPException(status_code=400, detail="Unsupported domain")
+    return extract_javinfo(request.code)
 
 @app.get("/health")
 async def health():
