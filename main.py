@@ -8,7 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
 from starlette.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse
 from bs4 import BeautifulSoup
+import subprocess
+import shutil
+import uuid
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -191,6 +195,61 @@ async def extract_metadata(request: ExtractRequest):
         raise HTTPException(status_code=400, detail="Code is required")
 
     return await run_in_threadpool(scrape_javlibrary, request.code)
+
+class ConvertVideoRequest(BaseModel):
+    file_path: str
+    delete_source: bool = True
+
+class ConvertVideoResponse(BaseModel):
+    success: bool
+    output_path: str
+    message: str = ""
+
+def run_ffmpeg_convert(input_path: str, delete_source: bool = True) -> str:
+    if not os.path.exists(input_path):
+        raise HTTPException(status_code=404, detail=f"Source video not found: {input_path}")
+
+    base, ext = os.path.splitext(input_path)
+    output_path = f"{base}_compressed_{uuid.uuid4().hex[:6]}.mp4"
+
+    cmd_compress = [
+        "ffmpeg", "-y", "-i", input_path,
+        "-c:v", "libx264", "-crf", "22", "-preset", "medium",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart",
+        output_path
+    ]
+
+    res = subprocess.run(cmd_compress, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if res.returncode != 0:
+        err = res.stderr.decode("utf-8", errors="ignore")
+        if os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except Exception:
+                pass
+        raise HTTPException(status_code=500, detail=f"FFmpeg compression failed: {err[-500:]}")
+
+    if delete_source and os.path.exists(input_path):
+        try:
+            os.remove(input_path)
+        except Exception:
+            pass
+
+    return output_path
+
+@app.post("/convert-video", response_model=ConvertVideoResponse)
+async def convert_video(req: ConvertVideoRequest):
+    if not req.file_path:
+        raise HTTPException(status_code=400, detail="file_path is required")
+
+    output_file = await run_in_threadpool(run_ffmpeg_convert, req.file_path, req.delete_source)
+    return ConvertVideoResponse(
+        success=True,
+        output_path=output_file,
+        message="Video converted to MP4 successfully without losing resolution"
+    )
 
 @app.get("/health")
 async def health():
