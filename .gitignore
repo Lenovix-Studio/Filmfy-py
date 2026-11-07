@@ -4,3 +4,4 @@
 
 # Mengabaikan virtual environment Anda
 venv/
+tests/
